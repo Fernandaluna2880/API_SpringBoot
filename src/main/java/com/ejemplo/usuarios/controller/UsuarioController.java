@@ -1,6 +1,8 @@
 package com.ejemplo.usuarios.controller;
 
-import com.ejemplo.usuarios.dto.UserUpdateRequestDTO;
+import com.ejemplo.usuarios.dto.ApiResponse;
+import com.ejemplo.usuarios.dto.UpdateRequest;
+import com.ejemplo.usuarios.dto.UsuarioResponse;
 import com.ejemplo.usuarios.service.UsuarioService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -13,7 +15,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/users")
@@ -23,24 +25,24 @@ public class UsuarioController {
     private final UsuarioService usuarioService;
 
     @GetMapping
-    public ResponseEntity<?> findAll() {
-        return ResponseEntity.ok(usuarioService.findAll());
+    public ResponseEntity<ApiResponse<List<UsuarioResponse>>> findAll() {
+        return ResponseEntity.ok(ApiResponse.ok("Usuarios obtenidos correctamente", usuarioService.findAll()));
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<?> findById(@PathVariable Long id) {
-        return ResponseEntity.ok(usuarioService.findById(id));
+    public ResponseEntity<ApiResponse<UsuarioResponse>> findById(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.ok("Usuario encontrado correctamente", usuarioService.findById(id)));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<?> update(@PathVariable Long id,
-                                    @Valid @RequestBody UserUpdateRequestDTO request) {
-        return ResponseEntity.ok(usuarioService.update(id, request));
+    public ResponseEntity<ApiResponse<UsuarioResponse>> update(@PathVariable Long id,
+                                                              @Valid @RequestBody UpdateRequest request) {
+        return ResponseEntity.ok(ApiResponse.ok("Usuario actualizado correctamente", usuarioService.update(id, request)));
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> deactivate(@PathVariable Long id) {
+    public ResponseEntity<ApiResponse<Void>> deactivate(@PathVariable Long id) {
         usuarioService.deactivate(id);
-        return ResponseEntity.ok(Map.of("message", "Usuario desactivado correctamente"));
+        return ResponseEntity.ok(ApiResponse.ok("Usuario desactivado correctamente", null));
     }
 }

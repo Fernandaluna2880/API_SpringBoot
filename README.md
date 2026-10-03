@@ -34,10 +34,10 @@ La aplicación separa las responsabilidades en capas que se comunican siempre en
 | Capa | Paquete | Responsabilidad en el flujo de usuarios |
 |------|---------|------------------------------------------|
 | **Controller** | `com.ejemplo.usuarios.controller` | Capa de presentación/API. Recibe la petición HTTP (`POST /api/v1/auth/register`, `GET /api/v1/users/{id}`, etc.), delega en el servicio y empaqueta la respuesta en `ResponseEntity<?>`. No contiene lógica de negocio ni de acceso a datos. |
-| **Service** | `com.ejemplo.usuarios.service` | Capa de **lógica de negocio**. Orquesta las reglas: verifica si el email ya existe, hashea la contraseña con BCrypt, valida credenciales en el login, desactiva la cuenta en el delete y lanza excepciones de negocio (`EmailAlreadyExistsException`, `InvalidCredentialsException`, `UsuarioNotFoundException`). Está anotada con `@Transactional`. |
+| **Service** | `com.ejemplo.usuarios.service` | Capa de **lógica de negocio**. Trabaja **solo con DTOs**: verifica si el email ya existe, hashea la contraseña con BCrypt, valida credenciales en el login, desactiva la cuenta en el delete y lanza excepciones de negocio (`EmailAlreadyExistsException`, `InvalidCredentialsException`, `RecursoNoEncontradoException`). Está anotada con `@Transactional`. |
 | **Repository** | `com.ejemplo.usuarios.repository` | Capa de **acceso a datos**. Extiende `JpaRepository<Usuario, Long>` y expone consultas derivadas como `findByEmail`, `existsByEmailIgnoreCase` y `findByEmailIgnoreCase`. Encapsula toda la interacción con la base de datos. |
 | **Entity** | `com.ejemplo.usuarios.entity` | Clase persistente `Usuario` mapeada con JPA (`@Entity`, `@Table`). Representa la tabla `usuarios` con `id`, `nombre`, `email` (único), `password` y `estado` (activo por defecto). |
-| **DTO** | `com.ejemplo.usuarios.dto` | Objetos de transferencia de datos. Los DTOs de entrada (`RegisterRequestDTO`, `LoginRequestDTO`, `UserUpdateRequestDTO`) definen el contrato JSON de las peticiones y sus validaciones con Bean Validation. El DTO de salida `UserResponseDTO` **nunca incluye la contraseña**, garantizando que esta no se exponga en ninguna respuesta. |
+| **DTO** | `com.ejemplo.usuarios.dto` | Records inmutables. Los DTOs de entrada (`RegisterRequest`, `LoginRequest`, `UpdateRequest`) definen el contrato JSON de las peticiones y sus validaciones con Bean Validation. El DTO de salida `UsuarioResponse` **no tiene componente `password`**, por lo que la fuga es imposible por construcción. `ApiResponse<T>` es el envoltorio uniforme de todas las respuestas. |
 | **Exception** | `com.ejemplo.usuarios.exception` | Excepciones de negocio personalizadas y el `GlobalExceptionHandler` (`@RestControllerAdvice`) que traduce las excepciones en respuestas HTTP con código y cuerpo estructurado. |
 
 **Flujo de una petición de registro:**
@@ -60,7 +60,7 @@ Repository (UsuarioRepository.save)
 Entity (Usuario) ── taba `usuarios` en H2
    │
    ▼
-Servicio devuelve UserResponseDTO (sin password) → Controller → 201 Created
+Servicio devuelve UsuarioResponse (sin password) → Controller → 201 Created
 ```
 
 ### 1.2 Manejo de Contraseñas
@@ -73,7 +73,7 @@ Servicio devuelve UserResponseDTO (sin password) → Controller → 201 Created
 
 **¿Cómo funciona el hashing con BCrypt?**
 
-`BCryptPasswordEncoder` (de `spring-security-crypto`) aplica a la contraseña un **hash unidireccional** basado en el cifrado Blowfish, con estas propiedades clave:
+`BCryptPasswordEncoder` (exposto como bean `PasswordEncoder` en `SecurityAppConfig`) aplica a la contraseña un **hash unidireccional** basado en el cifrado Blowfish, con estas propiedades clave:
 
 1. **Unidireccional**: dado el hash es computacionalmente inviable recuperar la contraseña original. No es reversible (a diferencia de cifrados AES).
 2. **Sal automática**: en cada ejecución, BCrypt genera un *salt* aleatorio que se incorpora al hash. Por eso **el mismo texto plano produce siempre un hash distinto**. Esto impide el uso de tablas *rainbow* precomputadas.
@@ -96,7 +96,7 @@ Servicio devuelve UserResponseDTO (sin password) → Controller → 201 Created
 | **Condición previa** | El email **no debe** existir | La cuenta **debe** existir |
 | **Acción sobre la contraseña** | Se hashea con `encode()` y se persiste | Se compara con `matches()` contra el hash guardado |
 | **Efecto en datos** | Inserta un nuevo registro con estado `activo` | Ninguno (lectura) |
-| **Resultado** | `201 Created` con el `UserResponseDTO` | `200 OK` con el `UserResponseDTO`, o `401 Unauthorized` si el email no existe o la clave no coincide |
+| **Resultado** | `201 Created` con el `UsuarioResponse` | `200 OK` con el `UsuarioResponse`, o `401 Unauthorized` si el email no existe o la clave no coincide |
 
 **Concepto clave**: el registro **crea** credenciales, el login **verifica** credenciales. El login nunca crea ni modifica usuarios: solo busca por email y valida el hash. Un fallo en cualquier paso produce exactamente la misma respuesta `401 Credenciales incorrectas`, para no filtrar si lo que falló fue el email o la contraseña (evita enumeración de cuentas).
 
@@ -106,7 +106,7 @@ Servicio devuelve UserResponseDTO (sin password) → Controller → 201 Created
 |------------|---------------|----------|-----------------|-----------------------------------|
 | **POST** | Crear un recurso (no idempotente) | `POST /api/v1/auth/register` | **201 Created** | 400 si falta un campo o el email ya existe |
 | **POST** | Operación de verificación (login) | `POST /api/v1/auth/login` | **200 OK** | 401 si las credenciales son incorrectas; 400 si el cuerpo es inválido |
-| **GET** | Leer/consultar (idempotente, no modifica) | `GET /api/v1/users` | **200 OK** | 401/403 si hubiera protección (fuera de alcance) |
+| **GET** | Leer/consultar (idempotente, no modifica) | `GET /api/v1/users` | **200 OK** | **401 Unauthorized** si falta autenticación |
 | **GET** | Leer un recurso por identificador | `GET /api/v1/users/{id}` | **200 OK** | **404 Not Found** si el id no existe |
 | **PUT** | Actualizar/reemplazar un recurso (idempotente) | `PUT /api/v1/users/{id}` | **200 OK** | **404** si el id no existe; **400** si el email ya está en uso o el cuerpo es inválido |
 | **DELETE** | Borrar o desactivar (idempotente) | `DELETE /api/v1/users/{id}` | **200 OK** (desactiva → `estado: false`) | **404** si el id no existe |
@@ -118,16 +118,19 @@ Servicio devuelve UserResponseDTO (sin password) → Controller → 201 Created
 | **200 OK** | Éxito genérico | Login correcto, listar usuarios, obtener por id, actualizar, desactivar |
 | **201 Created** | Recurso creado | Registro exitoso (`/auth/register`) |
 | **400 Bad Request** | Petición mal formada / conflicto de validación | Faltan campos, email inválido, email ya registrado |
-| **401 Unauthorized** | Credenciales inválidas | Login con email inexistente o contraseña incorrecta |
+| **401 Unauthorized** | Falta autenticación o las credenciales son inválidas | Login con email inexistente o contraseña incorrecta; rutas protegidas sin credenciales |
 | **404 Not Found** | Recurso inexistente | Consultar/actualizar/eliminar un `id` que no existe |
 
 Otras buenas prácticas aplicadas:
 
 - **Rutas en plural y versionadas**: `/api/v1/users`, `/api/v1/auth`.
 - **Recurso identificado por path** (`{id}`), nunca por query string para búsquedas directas.
-- **Stateless y desacoplado**: cada petición es independiente; el servicio no mantiene estado de sesión.
+- **Stateless y desacoplado**: `SessionCreationPolicy.STATELESS`, sin `JSESSIONID`; cada petición es independiente y el servicio no mantiene estado de sesión.
+- **CSRF deshabilitado** de forma justificada: al no existir sesión ni cookie de autenticación, el token anti-CSRF no aporta protección.
+- **Rutas públicas acotadas**: solo `/api/v1/auth/**`, `/api/v1/public/**` y `/h2-console/**`; el resto exige autenticación (`anyRequest().authenticated()`).
 - **JSON como formato de intercambio**, con `Content-Type: application/json`.
-- **Respuestas de error con cuerpo estructurado** (`timestamp`, `status`, `error`, `message`) en lugar de devolver solo el código.
+- **Deserialización estricta**: un número o booleano donde se espera texto (`{"nombre": 123}`) devuelve 400 en lugar de convertirse silenciosamente en `"123"` (`JacksonConfig`).
+- **Respuestas de error uniformes** mediante `ApiResponse {exito, mensaje, datos}` en lugar de devolver solo el código; los errores no previstos se registran en el log y devuelven un mensaje genérico (nunca el Stack Trace).
 - **DTOs de salida sin datos sensibles**: la contraseña jamás se serializa.
 
 ---
@@ -142,28 +145,41 @@ Api_springboot/
 ├── README.md
 └── src/main/
     ├── java/com/ejemplo/usuarios/
-    │   ├── UsuariosApplication.java        # Clase principal + bean BCryptPasswordEncoder
+    │   ├── UsuariosApplication.java        # Clase principal (arranque de Spring Boot)
+    │   ├── config/
+    │   │   ├── SecurityAppConfig.java      # Bean PasswordEncoder (BCrypt) + UserDetailsService
+    │   │   ├── SecurityConfig.java         # SecurityFilterChain: stateless, sin CSRF
+    │   │   ├── ApiAuthenticationEntryPoint.java # 401 en formato ApiResponse
+    │   │   └── JacksonConfig.java          # Deserialización estricta (sin coerción de tipos)
     │   ├── controller/
     │   │   ├── AuthController.java         # POST /api/v1/auth/register y /login
     │   │   └── UsuarioController.java      # GET/PUT/DELETE /api/v1/users
     │   ├── dto/
-    │   │   ├── RegisterRequestDTO.java
-    │   │   ├── LoginRequestDTO.java
-    │   │   ├── UserResponseDTO.java        # Nunca incluye password
-    │   │   └── UserUpdateRequestDTO.java
+    │   │   ├── RegisterRequest.java        # record + @NotBlank/@Email/@Size(min = 8)
+    │   │   ├── LoginRequest.java           # record + @NotBlank/@Email
+    │   │   ├── UpdateRequest.java           # record del PUT (no actualiza password)
+    │   │   ├── UsuarioResponse.java        # record de salida: NUNCA incluye password
+    │   │   └── ApiResponse.java            # record genérico {exito, mensaje, datos}
     │   ├── entity/
     │   │   └── Usuario.java                # @Entity -> tabla `usuarios`
     │   ├── exception/
     │   │   ├── EmailAlreadyExistsException.java
     │   │   ├── InvalidCredentialsException.java
-    │   │   ├── UsuarioNotFoundException.java
+    │   │   ├── RecursoNoEncontradoException.java
     │   │   └── GlobalExceptionHandler.java # @RestControllerAdvice (400/401/404/500)
     │   ├── repository/
     │   │   └── UsuarioRepository.java      # JpaRepository + consultas derivadas
     │   └── service/
     │       └── UsuarioService.java         # Lógica de negocio + BCrypt + @Transactional
     └── resources/
-        └── application.properties          # H2 en memoria + consola /h2-console
+        └── application.properties          # H2 en memoria + consola /h2-console + usuario dev
+└── src/test/java/com/ejemplo/usuarios/
+    ├── controller/
+    │   └── AuthControllerTest.java         # @WebMvcTest: verifica que no viaja `password`
+    ├── security/
+    │   └── SecurityIntegrationTest.java    # @SpringBootTest: rutas públicas vs. protegidas
+    └── service/
+        └── UsuarioServiceTest.java         # JUnit 5 + Mockito (BCrypt, guardado, mapeo)
 ```
 
 ---
@@ -229,6 +245,14 @@ Podrás ejecutar consultas SQL contra la tabla `usuarios` (por ejemplo, ver que 
 
 > **Nota para Windows (cmd/PowerShell):** las comillas dobles afectan cómo se interpreta el JSON. En PowerShell usa `curl.exe` (no el alias `curl` de PS) o escapa las comillas como `\"`. En bash/git-bash los comandos funcionan tal cual.
 
+> **Rutas protegidas:** `/api/v1/auth/**`, `/api/v1/public/**` y `/h2-console/**` son públicas. El resto (`/api/v1/users/**`) exige autenticación HTTP Basic con el usuario `admin` (configurable con `APP_SECURITY_USER`). **No hay contraseña en el repositorio**: al arrancar, Spring Boot genera una aleatoria y la imprime en el log (`Using generated security password: ...`); cópiala de ahí para los ejemplos, o fija una propia con `SPRING_SECURITY_USER_PASSWORD=miClave ./mvnw spring-boot:run`.
+
+En los ejemplos siguientes `$CLAVE` es esa contraseña:
+
+```bash
+CLAVE=<pega aquí la del log>
+```
+
 ### 4.1 Registro de usuario
 
 ```bash
@@ -241,10 +265,14 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 
 ```json
 {
-  "id": 1,
-  "nombre": "Ana Lopez",
-  "email": "ana@correo.com",
-  "estado": true
+  "exito": true,
+  "mensaje": "Usuario registrado correctamente",
+  "datos": {
+    "id": 1,
+    "nombre": "Ana Lopez",
+    "email": "ana@correo.com",
+    "estado": true
+  }
 }
 ```
 
@@ -260,10 +288,14 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ```json
 {
-  "id": 1,
-  "nombre": "Ana Lopez",
-  "email": "ana@correo.com",
-  "estado": true
+  "exito": true,
+  "mensaje": "Login exitoso",
+  "datos": {
+    "id": 1,
+    "nombre": "Ana Lopez",
+    "email": "ana@correo.com",
+    "estado": true
+  }
 }
 ```
 
@@ -279,10 +311,9 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 
 ```json
 {
-  "timestamp": "2026-09-08T19:02:21",
-  "status": 401,
-  "error": "Unauthorized",
-  "message": "Credenciales incorrectas"
+  "exito": false,
+  "mensaje": "Credenciales incorrectas",
+  "datos": null
 }
 ```
 
@@ -298,10 +329,9 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 
 ```json
 {
-  "timestamp": "2026-09-08T19:02:17",
-  "status": 400,
-  "error": "Bad Request",
-  "message": "El email ya se encuentra registrado"
+  "exito": false,
+  "mensaje": "El email ya se encuentra registrado",
+  "datos": null
 }
 ```
 
@@ -317,63 +347,75 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 
 ```json
 {
-  "timestamp": "2026-09-08T19:02:17",
-  "status": 400,
-  "error": "Bad Request",
-  "message": "nombre: El nombre es obligatorio; email: El email debe tener un formato valido; password: La contrasena debe tener entre 6 y 64 caracteres"
+  "exito": false,
+  "mensaje": "Datos invalidos",
+  "datos": {
+    "nombre": "El nombre es obligatorio",
+    "email": "El email debe tener un formato valido",
+    "password": "La contrasena debe tener entre 8 y 72 caracteres"
+  }
 }
 ```
 
 ### 4.6 Obtener todos los usuarios
 
 ```bash
-curl http://localhost:8080/api/v1/users
+curl -u admin:$CLAVE http://localhost:8080/api/v1/users
 ```
+
+Sin credenciales la respuesta es **401 Unauthorized**.
 
 **Respuesta esperada (200 OK):**
 
 ```json
-[
-  {
-    "id": 1,
-    "nombre": "Ana Lopez",
-    "email": "ana@correo.com",
-    "estado": true
-  }
-]
+{
+  "exito": true,
+  "mensaje": "Usuarios obtenidos correctamente",
+  "datos": [
+    {
+      "id": 1,
+      "nombre": "Ana Lopez",
+      "email": "ana@correo.com",
+      "estado": true
+    }
+  ]
+}
 ```
 
 ### 4.7 Obtener usuario por ID
 
 ```bash
-curl http://localhost:8080/api/v1/users/1
+curl -u admin:$CLAVE http://localhost:8080/api/v1/users/1
 ```
 
 **Respuesta esperada (200 OK):**
 
 ```json
 {
-  "id": 1,
-  "nombre": "Ana Lopez",
-  "email": "ana@correo.com",
-  "estado": true
+  "exito": true,
+  "mensaje": "Usuario encontrado correctamente",
+  "datos": {
+    "id": 1,
+    "nombre": "Ana Lopez",
+    "email": "ana@correo.com",
+    "estado": true
+  }
 }
 ```
 
 ### 4.8 Obtener usuario inexistente
 
 ```bash
-curl http://localhost:8080/api/v1/users/999
+curl -u admin:$CLAVE http://localhost:8080/api/v1/users/999
 ```
 
 **Respuesta esperada (404 Not Found):**
 
 ```json
 {
-  "timestamp": "2026-09-08T19:02:25",
-  "status": 404,
-  "error": "Not Found",
-  "message": "Usuario no encontrado con id: 999"
+  "exito": false,
+  "mensaje": "Usuario no encontrado con id: 999",
+  "datos": null
 }
 ```
 
@@ -381,6 +423,7 @@ curl http://localhost:8080/api/v1/users/999
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/users/1 \
+  -u admin:$CLAVE \
   -H "Content-Type: application/json" \
   -d '{"nombre":"Ana M. Lopez","email":"ana-nueva@correo.com"}'
 ```
@@ -389,10 +432,14 @@ curl -X PUT http://localhost:8080/api/v1/users/1 \
 
 ```json
 {
-  "id": 1,
-  "nombre": "Ana M. Lopez",
-  "email": "ana-nueva@correo.com",
-  "estado": true
+  "exito": true,
+  "mensaje": "Usuario actualizado correctamente",
+  "datos": {
+    "id": 1,
+    "nombre": "Ana M. Lopez",
+    "email": "ana-nueva@correo.com",
+    "estado": true
+  }
 }
 ```
 
@@ -400,6 +447,7 @@ curl -X PUT http://localhost:8080/api/v1/users/1 \
 
 ```bash
 curl -X PUT http://localhost:8080/api/v1/users/999 \
+  -u admin:$CLAVE \
   -H "Content-Type: application/json" \
   -d '{"nombre":"X","email":"x@correo.com"}'
 ```
@@ -408,39 +456,44 @@ curl -X PUT http://localhost:8080/api/v1/users/999 \
 
 ```json
 {
-  "timestamp": "2026-09-08T19:02:26",
-  "status": 404,
-  "error": "Not Found",
-  "message": "Usuario no encontrado con id: 999"
+  "exito": false,
+  "mensaje": "Usuario no encontrado con id: 999",
+  "datos": null
 }
 ```
 
 ### 4.11 Desactivar usuario (DELETE)
 
 ```bash
-curl -X DELETE http://localhost:8080/api/v1/users/1
+curl -X DELETE http://localhost:8080/api/v1/users/1 -u admin:$CLAVE
 ```
 
 **Respuesta esperada (200 OK):**
 
 ```json
 {
-  "message": "Usuario desactivado correctamente"
+  "exito": true,
+  "mensaje": "Usuario desactivado correctamente",
+  "datos": null
 }
 ```
 
 Después de desactivar, el usuario conserva su registro pero con `estado: false`:
 
 ```bash
-curl http://localhost:8080/api/v1/users/1
+curl -u admin:$CLAVE http://localhost:8080/api/v1/users/1
 ```
 
 ```json
 {
-  "id": 1,
-  "nombre": "Ana M. Lopez",
-  "email": "ana-nueva@correo.com",
-  "estado": false
+  "exito": true,
+  "mensaje": "Usuario encontrado correctamente",
+  "datos": {
+    "id": 1,
+    "nombre": "Ana M. Lopez",
+    "email": "ana-nueva@correo.com",
+    "estado": false
+  }
 }
 ```
 
@@ -448,11 +501,23 @@ curl http://localhost:8080/api/v1/users/1
 
 ## Endpoints de referencia rápida
 
-| Método | Ruta | Descripción | Códigos |
-|--------|------|-------------|---------|
-| POST | `/api/v1/auth/register` | Registra un usuario (hash BCrypt, estado activo) | 201, 400 |
-| POST | `/api/v1/auth/login` | Autentica con BCrypt | 200, 401, 400 |
-| GET | `/api/v1/users` | Lista todos los usuarios (DTO sin password) | 200 |
-| GET | `/api/v1/users/{id}` | Obtiene un usuario por id | 200, 404 |
-| PUT | `/api/v1/users/{id}` | Actualiza nombre/email | 200, 404, 400 |
-| DELETE | `/api/v1/users/{id}` | Desactiva la cuenta (`estado: false`) | 200, 404 |
+| Método | Ruta | Descripción | Códigos | Auth |
+|--------|------|-------------|---------|------|
+| POST | `/api/v1/auth/register` | Registra un usuario (hash BCrypt, estado activo) | 201, 400 | Pública |
+| POST | `/api/v1/auth/login` | Autentica con BCrypt | 200, 401, 400 | Pública |
+| GET | `/api/v1/users` | Lista todos los usuarios (DTO sin password) | 200, 401 | Requerida |
+| GET | `/api/v1/users/{id}` | Obtiene un usuario por id | 200, 401, 404 | Requerida |
+| PUT | `/api/v1/users/{id}` | Actualiza nombre/email | 200, 400, 401, 404 | Requerida |
+| DELETE | `/api/v1/users/{id}` | Desactiva la cuenta (`estado: false`) | 200, 401, 404 | Requerida |
+
+## Pruebas automatizadas
+
+```bash
+./mvnw test
+```
+
+| Prueba | Tipo | Qué garantiza |
+|--------|------|---------------|
+| `UsuarioServiceTest` | Unitaria (JUnit 5 + Mockito) | Que el registro invoca `passwordEncoder.encode()`, persiste el hash (no la clave en claro), guarda el usuario y mapea a `UsuarioResponse`; login, 404 y desactivación |
+| `AuthControllerTest` | Integración web (`@WebMvcTest` + MockMvc) | Que la respuesta de registro/login es 201/200 envuelta en `ApiResponse` y que **`$.datos.password` no existe** |
+| `SecurityIntegrationTest` | Integración (`@SpringBootTest` + H2) | Que `/api/v1/auth/**` es pública, `/api/v1/users/**` exige autenticación (401 en formato `ApiResponse`), que una ruta inexistente da 404 y que la API no emite cookie de sesión |
